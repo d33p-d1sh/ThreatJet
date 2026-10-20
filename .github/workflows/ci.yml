@@ -2,9 +2,11 @@ name: PowerShell CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -12,76 +14,70 @@ permissions:
 
 jobs:
   syntax:
-    name: Syntax / ${{ matrix.label }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-2022
-            shell: powershell
-            label: Windows PowerShell 5.1
-          - os: windows-2022
-            shell: pwsh
-            label: PowerShell 7 (Windows)
-          - os: ubuntu-24.04
-            shell: pwsh
-            label: PowerShell 7 (Linux)
+    name: Syntax compatibility
+    runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Parse both scripts without executing them
-        shell: ${{ matrix.shell }}
+      - name: Parse using Windows PowerShell 5.1
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           foreach ($file in @('ThreatJet.ps1', 'Build-TJETCveDatabase.ps1')) {
             $tokens = $null
             $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile(
-              (Join-Path $PWD $file), [ref]$tokens, [ref]$errors
-            ) | Out-Null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$errors) | Out-Null
             if (@($errors).Count -gt 0) {
-              foreach ($issue in $errors) {
-                Write-Host ("{0}: {1}" -f $file, $issue.Message)
-              }
-              throw ("PowerShell parse failed: {0}" -f $file)
+              $errors | ForEach-Object { Write-Host $_.Message }
+              throw "PowerShell 5.1 syntax check failed for $file"
             }
-            Write-Host ("Syntax OK: {0}" -f $file)
+            Write-Host "Windows PowerShell 5.1 syntax OK: $file"
+          }
+      - name: Parse using PowerShell 7 on Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @('ThreatJet.ps1', 'Build-TJETCveDatabase.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if (@($errors).Count -gt 0) {
+              $errors | ForEach-Object { Write-Host $_.Message }
+              throw "PowerShell 7 syntax check failed for $file"
+            }
+            Write-Host "PowerShell 7 syntax OK: $file"
           }
 
   pester:
-    name: Pester / ${{ matrix.label }}
+    name: Pester smoke tests
     runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shell: powershell
-            label: Windows PowerShell 5.1
-          - shell: pwsh
-            label: PowerShell 7
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Install Pester 5
-        shell: ${{ matrix.shell }}
+      - name: Test in Windows PowerShell 5.1
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($PSVersionTable.PSVersion.Major -eq 5) {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
-          }
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
           Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
-      - name: Run offline smoke tests
-        shell: ${{ matrix.shell }}
-        run: |
-          $ErrorActionPreference = 'Stop'
           Import-Module Pester -MinimumVersion 5.5.0 -ErrorAction Stop
           $config = New-PesterConfiguration
           $config.Run.Path = './tests'
-          $config.Output.Verbosity = 'Detailed'
+          $config.Run.Exit = $true
+          Invoke-Pester -Configuration $config
+      - name: Test in PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
+          Import-Module Pester -MinimumVersion 5.5.0 -ErrorAction Stop
+          $config = New-PesterConfiguration
+          $config.Run.Path = './tests'
           $config.Run.Exit = $true
           Invoke-Pester -Configuration $config
 
@@ -89,10 +85,11 @@ jobs:
     name: PSScriptAnalyzer (advisory)
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Install and run analyzer
+      - name: Report lint diagnostics
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -100,7 +97,7 @@ jobs:
           Import-Module PSScriptAnalyzer -ErrorAction Stop
           foreach ($file in @('ThreatJet.ps1', 'Build-TJETCveDatabase.ps1')) {
             $findings = @(Invoke-ScriptAnalyzer -Path $file -Severity Error,Warning)
-            Write-Host ("{0}: {1} analyzer diagnostic(s)" -f $file, $findings.Count)
+            Write-Host ("{0}: {1} diagnostic(s)" -f $file, $findings.Count)
             $findings | Select-Object -First 30 RuleName, Severity, Line, Message | Format-Table -Wrap
           }
-          Write-Host 'Lint diagnostics are advisory until the baseline is reviewed.'
+          Write-Host 'Lint findings are advisory until the baseline is reviewed.'
