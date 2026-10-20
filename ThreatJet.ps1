@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 # SPDX-License-Identifier: MIT
 
 <#
@@ -8,8 +8,8 @@
     radius), offline module-free CVE scanning ranked by CVSS, and an interactive HTML
     report with safety-guarded remediation. Collection never writes to Active Directory.
 
-    Version 2.3.2   Generated 2026-10-19 21:32
-    SourceHash: 7e829ed70a3de9ff690a307556efae3214f07543ef3a5268c0d4f1b9fb77ec82
+    Version 2.4.0   Generated 2026-10-19 23:12
+    SourceHash: e59d076648087669f6ed6e959397935c495798e002b6b8d4d72f0dbfab18d6c2
 
     Author:  Melvin Salyers (d33p-d1sh)
     Project: https://github.com/d33p-d1sh/ThreatJet
@@ -848,15 +848,17 @@ function Get-TJETBlastRadius {
 # ==========================================================================
 $script:TJETConfig = @{
     
-    CollectorVersion = "2.3.2"
+    CollectorVersion = "2.4.0"
 
-    CorrelationVersion = "2.3.2"
+    CorrelationVersion = "2.4.0"
 
     # 1.4: the findings CSV carries RunId and Finding_Type columns.
-    # 1.5: CVE findings are aggregated per product (Finding_Type 'Vulnerability') instead of
-    #      one-per-CVE, and two new artifacts are written: CVE_By_Product.csv and
-    #      CVE_Matches.csv. Additive and backward-compatible.
-    SchemaVersion = "1.5"
+    # 1.5: CVE findings aggregated per product (Finding_Type 'Vulnerability'); CVE_By_Product.csv
+    #      and CVE_Matches.csv written.
+    # 1.6: CVE DB schema v2 (unaffected_spec, cvss_vector, kev, epss); CVE artifacts gain KEV /
+    #      EPSS / vendor-match / outcome columns; Users audit gains Resultant_PSO; assessment
+    #      summary gains Vulnerable_Products / Vulnerable_CVEs(_KEV). Additive, backward-compatible.
+    SchemaVersion = "1.6"
 
     # Filesystem credential datamining is OFF by default: it reads file contents and can
     # be slow on a large disk. Enable via -DataminePasswords on the orchestrator.
@@ -2589,13 +2591,20 @@ Get-ADObject -Filter "SamAccountName -eq '$t'" -Properties 'msDS-KeyCredentialLi
         }
 
         'DOM-006' {
-            # Weak domain password policy.
+            # DOM-006 is a FINE-GRAINED password policy (PSO) weaker than the domain default
+            # -- the Target is the PSO, so remediation must target the PSO, NOT the domain
+            # default policy. (Earlier this emitted Set-ADDefaultDomainPasswordPolicy, which
+            # would have an admin change the wrong policy entirely.)
             return Cmd @"
-# Review the effective domain password policy.
-Get-ADDefaultDomainPasswordPolicy | Select-Object MinPasswordLength, PasswordHistoryCount, LockoutThreshold, ComplexityEnabled, MaxPasswordAge
-# Example hardening (adjust to your standard, review first):
-# Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain).DistinguishedName -MinPasswordLength 14 -ComplexityEnabled `$true -WhatIf
-"@ 'Caution' 'Domain-wide policy change. Coordinate with stakeholders; test before removing -WhatIf.'
+# Review the fine-grained password policy (PSO) flagged as weaker than the domain default.
+Get-ADFineGrainedPasswordPolicy -Identity '$t' | Select-Object Name, Precedence, MinPasswordLength, ComplexityEnabled, PasswordHistoryCount, LockoutThreshold, AppliesTo
+# Raise the PSO to your baseline (adjust values; review first):
+# Set-ADFineGrainedPasswordPolicy -Identity '$t' -MinPasswordLength 14 -ComplexityEnabled `$true -WhatIf
+# OR rescope it away from privileged principals instead of weakening their protection:
+# Remove-ADFineGrainedPasswordPolicySubject -Identity '$t' -Subjects '<principal-or-group>' -WhatIf
+"@ 'Caution' 'Affects every principal this PSO applies to (see AppliesTo). Coordinate and test before removing -WhatIf.' `
+              'ActiveDirectory module; write access to the Password Settings object.' `
+              'No automatic rollback: record the PSO settings (and AppliesTo) before changing so they can be restored.'
         }
 
         'LOCAL-025' {
@@ -2642,15 +2651,19 @@ Get-ADObject (Get-ADDomain).DistinguishedName -Properties 'ms-DS-MachineAccountQ
         }
 
         'ID-011' {
-            # Privileged account exposed to spraying/cracking (weak/old password).
+            # ID-011 is a privileged account with NO PSO meeting the baseline (it inherits a
+            # weaker domain default). The fix is to assign a strong PSO, NOT to reset the
+            # password -- a reset re-applies the same weak policy. Confirm the EFFECTIVE
+            # (resultant) policy first, since a group-inherited PSO may already cover it.
             return Cmd @"
-# Review the account's password age and last-set. Remediation is a forced reset to a strong password.
-Get-ADUser -Identity '$t' -Properties PasswordLastSet, PasswordExpired, LockedOut | Select-Object SamAccountName, PasswordLastSet, PasswordExpired, LockedOut
-# Force a reset at next logon (interactive accounts) or rotate a strong password (service accounts):
-# Set-ADUser -Identity '$t' -ChangePasswordAtLogon `$true -WhatIf
-"@ 'Safe' 'Read-only review by default. Coordinate a password reset; for service accounts rotate rather than force-change-at-logon.' `
-             'ActiveDirectory module; reset-password rights over the account.' `
-             'No automatic rollback: a rotated credential should not be reverted. Update dependent services with the new password.'
+# Confirm the account's effective (resultant) password policy.
+Get-ADUserResultantPasswordPolicy -Identity '$t' | Select-Object Name, MinPasswordLength, ComplexityEnabled, PasswordHistoryCount, LockoutThreshold
+# If it resolves to the (weaker) domain default, apply a strong PSO to the account or its admin group:
+# Add-ADFineGrainedPasswordPolicySubject -Identity '<Privileged-PSO>' -Subjects '$t' -WhatIf
+# (Create the PSO first if one does not exist: New-ADFineGrainedPasswordPolicy -Name 'Privileged-PSO' -Precedence 10 -MinPasswordLength 15 -ComplexityEnabled `$true ... )
+"@ 'Caution' 'Read-only review by default. A password reset does NOT fix this -- it re-applies the same weak policy; assign a PSO instead. If GetResultantPasswordPolicy already shows a compliant PSO, this is a false positive (group-inherited PSO).' `
+             'ActiveDirectory module; write access to the Password Settings Container.' `
+             'No automatic rollback needed: removing the account from the PSO subject list reverts it (Remove-ADFineGrainedPasswordPolicySubject).'
         }
 
         'GRP-002' {
@@ -7054,7 +7067,8 @@ function Collect-Users {
         'distinguishedName','objectGUID','objectSid','sAMAccountName','sidHistory',
         'memberOf','servicePrincipalName','adminCount','userAccountControl',
         'pwdLastSet','lastLogonTimestamp','whenCreated',
-        'msDS-AllowedToDelegateTo','msDS-KeyCredentialLink'
+        'msDS-AllowedToDelegateTo','msDS-KeyCredentialLink',
+        'msDS-ResultantPSO'   # constructed: the PSO that actually applies (direct OR group-inherited)
     )
 
     $searcher = $ctx.NewSearcher('(&(objectCategory=person)(objectClass=user))', $properties)
@@ -7102,6 +7116,13 @@ function Collect-Users {
         $record['Has_Delegation_Targets']       = [bool](Get-TJETLdapProperty $flat 'msds-allowedtodelegateto')
         $record['Has_Unconstrained_Delegation'] = (Test-TJETUacFlag $uac 'TrustedForDelegation')
         $record['Has_ASREP_Risk']               = (Test-TJETUacFlag $uac 'NoPreAuth')
+
+        # Resultant PSO: the fine-grained password policy that ACTUALLY applies to the
+        # account, whether assigned directly or inherited through a group. Empty means no
+        # PSO applies and the account falls back to the (possibly weak) domain default --
+        # which is exactly what ID-011 looks for. Constructed attribute, so it may be
+        # unreadable for other users from a low-privilege context; empty then too.
+        $record['Resultant_PSO'] = Get-TJETLdapProperty $flat 'msds-resultantpso'
 
         # --- Credential material --------------------------------------------
         $record['Has_Shadow_Credentials'] = [bool](Get-TJETLdapProperty $flat 'msds-keycredentiallink')
@@ -7364,6 +7385,25 @@ function Invoke-ADCSFindings {
                 -Recommendation 'Constrain the template EKUs to the minimum required, require manager approval, or restrict enrollment. Unpublish if unused.'
         }
 
+        # -------------------------------------------------- ESC3 (ADCS-003) ---
+        # Enrollment-Agent template: carries the Certificate Request Agent EKU
+        # (1.3.6.1.4.1.311.20.2.1) and is enrollable by low-priv users without approval.
+        # The holder can enrol on behalf of other principals, including privileged ones.
+        $hasEnrollAgentEku = ("$($t.All_EKUs)" -match '1\.3\.6\.1\.4\.1\.311\.20\.2\.1')
+        if ($hasEnrollAgentEku -and $lowPrivEnroll -and -not $managerApproval) {
+
+            New-Finding `
+                -Finding_ID 'ADCS-003' `
+                -Severity ($(if ($isPublished) { 'High' } else { 'Medium' })) `
+                -Confidence 'Medium' `
+                -Category 'ADCS' `
+                -Target "Certificate template: $name" `
+                -Target_GUID "$($t.Template_GUID)" `
+                -Finding 'Certificate template is vulnerable to ESC3 (Enrollment Agent).' `
+                -Evidence ("Template '$name' carries the Certificate Request Agent EKU (1.3.6.1.4.1.311.20.2.1) and is enrollable by low-privileged principals ($($t.Enroll_Principals)) without manager approval. A holder can request an enrollment-agent certificate and then enrol for a certificate on behalf of another principal (including a privileged one) against any template that accepts an enrollment-agent signature. $publishNote") `
+                -Recommendation 'Restrict enrollment on the Enrollment Agent template to a trusted group, require manager approval, or unpublish it if unused. Also restrict which templates accept enrollment-agent signatures and define Enrollment Agent Restrictions on the CA.'
+        }
+
         # -------------------------------------------------- ESC4 (ADCS-004) ---
         # Low-priv principals can WRITE the template -> reconfigure into ESC1.
         if ($lowPrivWrite) {
@@ -7581,14 +7621,27 @@ function Invoke-AttackPathFindings {
 
             $firstFrom = $graph.Nodes[$firstHop.From].Name
             $firstTo   = $graph.Nodes[$firstHop.To].Name
+            $firstType = "$($firstHop.Type)"
+
+            # Phrase the cut by EDGE TYPE -- "remove the right" is wrong for a membership or
+            # a delegation. Any single edge on the path breaks it; the first (nearest the
+            # source) is the suggested cut.
+            $breakAt = switch -Regex ($firstType) {
+                '^MemberOf$'             { "Remove $firstFrom from the group $firstTo" ; break }
+                '^(AddSelf|AddMember)$'  { "Remove $firstFrom's ability to add members to $firstTo ($firstType)" ; break }
+                '^ForceChangePassword$'  { "Remove $firstFrom's reset-password right over $firstTo" ; break }
+                '^AllowedToDelegate$'    { "Remove the delegation from $firstFrom to $firstTo" ; break }
+                '^Owns$'                 { "Reassign ownership of $firstTo away from $firstFrom" ; break }
+                default                  { "Remove the $firstType right $firstFrom holds over $firstTo" }
+            }
 
             $pathRows.Add([PSCustomObject]@{
                 Source       = $path.Source
                 Target_Tier0 = $path.Target
                 Hop_Count    = $path.Hops
                 Path         = $chain
-                First_Link   = "$firstFrom -[$($firstHop.Type)]-> $firstTo"
-                Break_At     = "Remove the '$($firstHop.Type)' right held by $firstFrom over $firstTo"
+                First_Link   = "$firstFrom -[$firstType]-> $firstTo"
+                Break_At     = "$breakAt (or cut any single edge on the path)"
             })
         }
 
@@ -8247,14 +8300,27 @@ function Invoke-FGPPFindings {
         # is meaningless.
         if ($user.ObjectSID -match '-(501|502)$') { continue }
 
-        # Direct assignment only. Group-based PSO inheritance is NOT resolved here;
-        # the finding text and Confidence=Medium both say so explicitly.
-        $covered = $false
+        # An account is "covered" if a PSO actually applies to it. msDS-ResultantPSO is the
+        # AUTHORITATIVE signal -- it reflects the effective policy whether assigned directly
+        # OR inherited through a group, which is what the old direct-only check missed and
+        # over-reported. Fall back to a direct AppliesTo match only when the resultant
+        # attribute was not collected/readable (it is constructed and may be ACL-restricted
+        # from a low-privilege context).
+        $resultantPso = ''
+        if ($user.PSObject.Properties.Name -contains 'Resultant_PSO') {
+            $resultantPso = "$($user.Resultant_PSO)".Trim()
+        }
 
-        foreach ($pso in $fgpp) {
-            if ($user.DistinguishedName -and $pso.AppliesTo -match [regex]::Escape($user.DistinguishedName)) {
-                $covered = $true
-                break
+        $covered = $false
+        if (-not [string]::IsNullOrWhiteSpace($resultantPso)) {
+            $covered = $true   # a PSO (direct or inherited) applies -- not an ID-011 case
+        }
+        else {
+            foreach ($pso in $fgpp) {
+                if ($user.DistinguishedName -and $pso.AppliesTo -match [regex]::Escape($user.DistinguishedName)) {
+                    $covered = $true
+                    break
+                }
             }
         }
 
@@ -8263,13 +8329,13 @@ function Invoke-FGPPFindings {
         New-Finding `
             -Finding_ID 'ID-011' `
             -Severity 'High' `
-            -Confidence 'Medium' `
+            -Confidence 'High' `
             -Category 'Identity' `
             -Target $user.SamAccountName `
             -Target_GUID $user.ObjectGUID `
-            -Finding 'Privileged identity has no directly assigned fine-grained password policy.' `
-            -Evidence "Domain default MinPasswordLength=$domainMin is below the privileged baseline of $($script:TJETConfig.PrivilegedPasswordBaselineLength). Group-based PSO inheritance was not evaluated." `
-            -Recommendation 'Assign a strong PSO to privileged accounts or their groups.'
+            -Finding 'Privileged identity has no fine-grained password policy applied.' `
+            -Evidence "Domain default MinPasswordLength=$domainMin is below the privileged baseline of $($script:TJETConfig.PrivilegedPasswordBaselineLength). No PSO applies to this account -- direct and group-inherited (msDS-ResultantPSO) were both checked. If the resultant PSO was not readable from this context, verify manually." `
+            -Recommendation 'Assign a strong PSO to privileged accounts or their groups (a weak applied PSO is reported separately as DOM-006).'
     }
 }
 
@@ -8866,56 +8932,45 @@ function Invoke-OfflineCVEScan {
 <#
 .SYNOPSIS
     Matches the collected software inventory against a local MITRE CVE database and reports
-    vulnerable software AGGREGATED PER PRODUCT, ranked by CVSS.
+    vulnerable software AGGREGATED PER PRODUCT, ranked by KEV then CVSS.
 .DESCRIPTION
-    An offline vulnerability scan. Reads the software inventory produced by
-    Collect-SoftwareInventory and looks each product up in a local CVE database built from
-    MITRE's cvelistV5.
+    Reads the software inventory (name + version + publisher) and looks each product up in a
+    local CVE database built from cvelistV5 (see Build-TJETCveDatabase.ps1).
 
     WHY PER-PRODUCT. A single outdated product can match hundreds of CVEs. Emitting one
-    finding per CVE buries the entire assessment -- the configuration, identity and
-    attack-path findings that describe the environment's posture -- under a wall of
-    vulnerability rows. So this detector emits ONE finding per vulnerable product
-    (Finding_Type 'Vulnerability'), carrying the CVE count and the worst CVSS, and writes
-    the full per-CVE detail to CSV. Reporting keeps these out of the posture dashboard and
-    shows them in their own CVSS-ranked panel, so the two kinds of risk do not compete.
+    finding per CVE buries the posture findings. So this emits ONE finding per vulnerable
+    product (Finding_Type 'Vulnerability'); reporting shows them in their own CVSS-ranked
+    panel and keeps them out of the posture dashboard.
 
-    NO EXTERNAL MODULE REQUIRED. The database can be a format PowerShell reads natively:
+    NO EXTERNAL MODULE REQUIRED. Database format is picked by extension:
+        .csv / .json  -- read natively.
+        .db / .sqlite -- optional fast path, only if the PSSQLite module is present.
 
-        .csv   -- columns: cve_id, product_name, vendor_name, vulnerable_spec[, cvss]   (Import-Csv)
-        .json  -- an array of objects with those same keys                              (ConvertFrom-Json)
-        .db / .sqlite -- SQLite, used ONLY if the PSSQLite module is already present (optional).
+    CSV/JSON columns (all but the first four optional):
+        cve_id, product_name, vendor_name, vulnerable_spec, unaffected_spec,
+        cvss, cvss_vector, kev, epss
 
-    'cvss' is an OPTIONAL numeric base score (0.0-10.0). When present it drives severity and
-    ranking (>=9 Critical, >=7 High, >=4 Medium, >0 Low). When absent, the finding falls
-    back to match-confidence severity and ranks by CVE count.
+    Precision controls:
+      - UNAFFECTED SUPPRESSION. If the installed version satisfies an unaffected_spec for a
+        CVE (a fixed release inside an affected range), that CVE is dropped for the product
+        (outcome Unaffected) -- so a patched version is not falsely flagged.
+      - VENDOR CORROBORATION. The installed Publisher is compared to the CVE vendor by token
+        overlap. A clear mismatch DOWNGRADES confidence and is annotated (never a hard
+        exclude -- publisher strings legitimately differ, e.g. "Mozilla" vs "Mozilla
+        Corporation", so excluding would cause false negatives).
+      - OUTCOMES. Affected (version in range), Unaffected (explicitly excluded), or Unknown
+        (version could not be compared) -- Unknown is reported at low confidence, not dropped.
 
-    vulnerable_spec is one of:
-        "Ver: X to <Y"   -> affected range  [X, Y)
-        "Ver: X"         -> exact affected version X
+    Prioritisation: KEV (known exploited) outranks everything; then CVSS base score; then
+    EPSS. A product with any KEV CVE is raised to at least High.
 
-    SQLite schema (optional path): vulnerabilities(id, cve_id, product_name, vendor_name,
-    vulnerable_spec[, cvss]) with an index on product_name.
-
-    CONVERTING AN EXISTING cves.db TO THE MODULE-FREE FORM (one-off):
-        sqlite3 -header -csv cves.db "SELECT cve_id, product_name, vendor_name, vulnerable_spec, cvss FROM vulnerabilities;" > cves.csv
-
-    Matching is deliberately conservative (a CVE feed keyed on free-text product names is
-    noisy): product name is normalised and gated on exact/contained match, and the installed
-    version is tested against the spec. An unparseable version downgrades confidence rather
-    than guessing. Findings never claim exploitability -- "validate and patch", not "owned".
-
-    Writes two artefacts to the output folder:
-        CVE_By_Product.csv  one row per vulnerable product (count, worst CVSS, worst CVE)
-        CVE_Matches.csv     one row per matched CVE (full detail for triage)
+    Writes CVE_By_Product.csv (one row per product) and CVE_Matches.csv (one row per CVE).
+    A CVE match is not proof of exploitability -- the recommendation is "validate, then patch".
 #>
     [CmdletBinding()]
     param(
         $Context,
-
         [string]$DatabasePath = 'C:\Security\cves.csv',
-
-        # Products whose CVE noise is not worth the triage cost by default.
         [string[]]$ExcludeProducts = @()
     )
 
@@ -8928,7 +8983,6 @@ function Invoke-OfflineCVEScan {
     $software = @($Context.Data.LocalHost | Where-Object {
         $_.Check -eq 'SoftwareInventory' -and $_.Software_Product
     })
-
     if ($software.Count -eq 0) {
         Write-TJETLog INFO 'No software inventory present; run with software collection to enable the CVE scan.'
         return
@@ -8957,7 +9011,6 @@ function Invoke-OfflineCVEScan {
         catch { return $null }
     }
 
-    # Parse an optional CVSS base score to a double, or $null if absent/unparseable.
     function ConvertTo-CvssScore {
         param($Raw)
         if ($null -eq $Raw) { return $null }
@@ -8972,8 +9025,6 @@ function Invoke-OfflineCVEScan {
         return $null
     }
 
-    # CVSS base score -> severity band (CVSS v3 ranges). $null score -> $null (caller
-    # falls back to match-confidence severity).
     function Get-CvssSeverity {
         param($Score)
         if ($null -eq $Score) { return $null }
@@ -9029,6 +9080,25 @@ function Invoke-OfflineCVEScan {
         }
     }
 
+    # Vendor name -> comparable tokens (lowercase, de-punctuated, stop-words removed).
+    $vendorStop = @('inc','llc','ltd','corp','corporation','co','company','the','gmbh','sa',
+                    'ag','plc','group','software','systems','system','technologies','technology',
+                    'project','foundation','limited','labs','io','app','apps')
+    function Get-VendorTokens {
+        param([string]$Name)
+        if ([string]::IsNullOrWhiteSpace($Name)) { return @() }
+        $n = ($Name.ToLowerInvariant() -replace '[^a-z0-9 ]', ' ')
+        return @($n -split '\s+' | Where-Object { $_.Length -ge 3 -and $vendorStop -notcontains $_ })
+    }
+
+    # Safe optional-column read from a DB row (CSV/JSON/SQLite) -- returns '' if absent.
+    function Get-RowProp {
+        param($Row, [string]$Name)
+        $p = $Row.PSObject.Properties[$Name]
+        if ($p) { return "$($p.Value)" }
+        return ''
+    }
+
     # ---------------------------------------------------- installed targets ---
     $targets = foreach ($product in $software) {
         $displayName = "$($product.Software_Product)".Trim()
@@ -9040,6 +9110,7 @@ function Invoke-OfflineCVEScan {
         [PSCustomObject]@{
             DisplayName      = $displayName
             RawVersion       = "$($product.Software_Version)"
+            Publisher        = "$($product.Software_Publisher)".Trim()
             Normalized       = $normalized
             LeadToken        = $leadToken
             InstalledVersion = ConvertTo-ComparableVersion $product.Software_Version
@@ -9054,7 +9125,6 @@ function Invoke-OfflineCVEScan {
 
     # ---------------------------------------------- data source resolution ---
     $ext = ([System.IO.Path]::GetExtension($DatabasePath)).ToLowerInvariant()
-
     $flatIndex = $null
     $useSqlite = $false
 
@@ -9065,8 +9135,7 @@ function Invoke-OfflineCVEScan {
         }
         else {
             Write-TJETLog WARNING ("CVE database '$DatabasePath' is SQLite and the PSSQLite module is not installed. " +
-                "ThreatJET does not need it: export the data to CSV or JSON and point -CVEDatabasePath at that file. " +
-                "One-off: sqlite3 -header -csv `"$DatabasePath`" `"SELECT cve_id,product_name,vendor_name,vulnerable_spec,cvss FROM vulnerabilities;`" > cves.csv  -- Skipping CVE scan.")
+                "ThreatJET does not need it: export the data to CSV or JSON and point -CVEDatabasePath at that file. Skipping CVE scan.")
             return
         }
     }
@@ -9077,7 +9146,7 @@ function Invoke-OfflineCVEScan {
                 else { @(Get-Content -Path $DatabasePath -Raw | ConvertFrom-Json) }
         }
         catch {
-            Write-TJETLog ERROR "Could not read CVE database '$DatabasePath': $($_.Exception.Message). Expected $ext with fields cve_id, product_name, vendor_name, vulnerable_spec[, cvss]. Skipping."
+            Write-TJETLog ERROR "Could not read CVE database '$DatabasePath': $($_.Exception.Message). Skipping."
             return
         }
         $flatIndex = @{}
@@ -9102,8 +9171,10 @@ function Invoke-OfflineCVEScan {
     function Get-CandidateRows {
         param([string]$LeadToken)
         if ($useSqlite) {
+            # SQLite fast path reads core columns only; the optional enrichment columns
+            # (unaffected_spec, cvss_vector, kev, epss) are a CSV/JSON feature.
             return @(Invoke-SqliteQuery -DataSource $DatabasePath `
-                -Query 'SELECT cve_id, product_name, vendor_name, vulnerable_spec, cvss FROM vulnerabilities WHERE product_name LIKE @p' `
+                -Query 'SELECT cve_id, product_name, vendor_name, vulnerable_spec FROM vulnerabilities WHERE product_name LIKE @p' `
                 -SqlParameters @{ p = "%$LeadToken%" } `
                 -ErrorAction Stop)
         }
@@ -9111,12 +9182,13 @@ function Invoke-OfflineCVEScan {
         return @()
     }
 
-    $sevRank = @{ Critical = 5; High = 4; Medium = 3; Low = 2; Info = 1 }
     $confRank = @{ High = 3; Medium = 2; Low = 1 }
+    $sevRank  = @{ Critical = 5; High = 4; Medium = 3; Low = 2; Info = 1 }
+    function Step-DownConfidence { param($c) switch ($c) { 'High' { 'Medium' } 'Medium' { 'Low' } default { 'Low' } } }
 
     # ------------------------------------------------------------- scan ---
-    $byProduct = New-Object System.Collections.Generic.List[object]   # one row per product
-    $allMatches = New-Object System.Collections.Generic.List[object]  # one row per CVE match
+    $byProduct  = New-Object System.Collections.Generic.List[object]
+    $allMatches = New-Object System.Collections.Generic.List[object]
     $productFindingCount = 0
     $cveMatchCount = 0
 
@@ -9125,76 +9197,134 @@ function Invoke-OfflineCVEScan {
         $displayName      = $target.DisplayName
         $normalized       = $target.Normalized
         $installedVersion = $target.InstalledVersion
+        $pubTokens        = Get-VendorTokens $target.Publisher
 
         try { $rows = Get-CandidateRows -LeadToken $target.LeadToken }
         catch { Write-TJETLog WARNING "CVE lookup failed for '$displayName': $($_.Exception.Message)"; continue }
-
         if (-not $rows -or $rows.Count -eq 0) { continue }
 
-        # Best record per CVE id for this product (keep the strongest confidence / score).
-        $bestByCve = @{}
+        # Keep only rows whose product name matches this installed product.
+        $affectedRows = New-Object System.Collections.Generic.List[object]
+        $unaffByCve   = @{}   # cve -> list of parsed unaffected specs
 
         foreach ($row in $rows) {
             $cveProduct = Get-NormalizedProduct "$($row.product_name)"
             if ([string]::IsNullOrWhiteSpace($cveProduct)) { continue }
-
             $exactProduct = ($cveProduct -eq $normalized)
             $contains     = ($normalized -like "*$cveProduct*" -or $cveProduct -like "*$normalized*")
             if (-not $exactProduct -and -not $contains) { continue }
 
-            $parsedSpec  = ConvertFrom-VulnerableSpec "$($row.vulnerable_spec)"
+            $cveId  = "$($row.cve_id)"
+            $unaff  = Get-RowProp $row 'unaffected_spec'
+            if (-not [string]::IsNullOrWhiteSpace($unaff)) {
+                if (-not $unaffByCve.ContainsKey($cveId)) { $unaffByCve[$cveId] = New-Object System.Collections.Generic.List[object] }
+                $unaffByCve[$cveId].Add((ConvertFrom-VulnerableSpec $unaff))
+                continue
+            }
+            # Affected row (vulnerable_spec set, or empty = no-version affected). Tag exactness.
+            $affectedRows.Add([PSCustomObject]@{ Row = $row; ExactProduct = $exactProduct })
+        }
+
+        if ($affectedRows.Count -eq 0) { continue }
+
+        # Best record per CVE id for this product.
+        $bestByCve = @{}
+
+        foreach ($entry in $affectedRows) {
+            $row   = $entry.Row
+            $cveId = "$($row.cve_id)"
+
+            # --- unaffected suppression: installed version explicitly NOT affected? ---
+            if ($unaffByCve.ContainsKey($cveId)) {
+                $suppressed = $false
+                foreach ($us in $unaffByCve[$cveId]) {
+                    $ut = Test-VersionAffected -Installed $installedVersion -ParsedSpec $us
+                    if ($ut.Affected -and $ut.Certain) { $suppressed = $true; break }
+                }
+                if ($suppressed) { continue }   # outcome: Unaffected (fixed/excepted) -> drop
+            }
+
+            $parsedSpec  = ConvertFrom-VulnerableSpec (Get-RowProp $row 'vulnerable_spec')
             $versionTest = Test-VersionAffected -Installed $installedVersion -ParsedSpec $parsedSpec
             if (-not $versionTest.Affected) { continue }
 
-            $confidence = if ($exactProduct -and $versionTest.Certain) { 'High' }
+            $outcome = if ($versionTest.Certain) { 'Affected' } else { 'Unknown' }
+
+            $confidence = if ($entry.ExactProduct -and $versionTest.Certain) { 'High' }
                           elseif ($versionTest.Certain) { 'Medium' }
                           else { 'Low' }
 
-            $cvss  = ConvertTo-CvssScore ($row.PSObject.Properties['cvss'] | ForEach-Object { $_.Value })
-            $cveId = "$($row.cve_id)"
+            # --- vendor corroboration ---
+            $cveVendorTokens = Get-VendorTokens (Get-RowProp $row 'vendor_name')
+            $vendorMatch = 'unknown'
+            if ($pubTokens.Count -gt 0 -and $cveVendorTokens.Count -gt 0) {
+                $overlap = @($pubTokens | Where-Object { $cveVendorTokens -contains $_ })
+                if ($overlap.Count -gt 0) { $vendorMatch = 'match' }
+                else { $vendorMatch = 'mismatch'; $confidence = Step-DownConfidence $confidence }
+            }
+
+            $cvss   = ConvertTo-CvssScore (Get-RowProp $row 'cvss')
+            $vector = Get-RowProp $row 'cvss_vector'
+            $kev    = (Get-RowProp $row 'kev') -match '(?i)^(true|yes|1)$'
+            $epss   = Get-RowProp $row 'epss'
 
             $existing = $bestByCve[$cveId]
-            if ($null -eq $existing -or $confRank[$confidence] -gt $confRank[$existing.Confidence]) {
+            $better = ($null -eq $existing) -or ($confRank[$confidence] -gt $confRank[$existing.Confidence])
+            if ($better) {
                 $bestByCve[$cveId] = [PSCustomObject]@{
-                    CveId      = $cveId
-                    Confidence = $confidence
-                    Certain    = $versionTest.Certain
-                    Vendor     = "$($row.vendor_name)"
-                    Spec       = "$($row.vulnerable_spec)"
-                    Cvss       = $cvss
+                    CveId = $cveId; Confidence = $confidence; Certain = $versionTest.Certain
+                    Outcome = $outcome; Vendor = (Get-RowProp $row 'vendor_name'); VendorMatch = $vendorMatch
+                    Spec = (Get-RowProp $row 'vulnerable_spec'); Cvss = $cvss; Vector = $vector
+                    Kev = $kev; Epss = $epss
                 }
             }
-            elseif ($null -ne $cvss -and ($null -eq $existing.Cvss -or $cvss -gt $existing.Cvss)) {
-                $existing.Cvss = $cvss   # keep the highest CVSS seen for this CVE
+            else {
+                if ($null -ne $cvss -and ($null -eq $existing.Cvss -or $cvss -gt $existing.Cvss)) { $existing.Cvss = $cvss; $existing.Vector = $vector }
+                if ($kev) { $existing.Kev = $true }
             }
         }
 
         if ($bestByCve.Count -eq 0) { continue }
 
         # --------------------------------------------- aggregate per product ---
-        $matches = @($bestByCve.Values)
-        $cveMatchCount += $matches.Count
+        $cveMatches = @($bestByCve.Values)
+        $cveMatchCount += $cveMatches.Count
 
-        $scored    = @($matches | Where-Object { $null -ne $_.Cvss })
-        $worstCvss = if ($scored.Count -gt 0) { ($scored | Sort-Object Cvss -Descending | Select-Object -First 1).Cvss } else { $null }
-        $worstCve  = if ($scored.Count -gt 0) { ($scored | Sort-Object Cvss -Descending | Select-Object -First 1).CveId } else { '' }
-        $bestConf  = ($matches | Sort-Object { $confRank["$($_.Confidence)"] } -Descending | Select-Object -First 1).Confidence
-        $anyUncertain = @($matches | Where-Object { -not $_.Certain }).Count -gt 0
+        $scored    = @($cveMatches | Where-Object { $null -ne $_.Cvss })
+        $worstCvss = if ($scored.Count -gt 0) { ($scored | Sort-Object -Property Cvss -Descending | Select-Object -First 1).Cvss } else { $null }
+        $worstRow  = if ($scored.Count -gt 0) { ($scored | Sort-Object -Property Cvss -Descending | Select-Object -First 1) } else { $null }
+        $worstCve  = if ($worstRow) { $worstRow.CveId } else { '' }
+        $worstVec  = if ($worstRow) { $worstRow.Vector } else { '' }
+        $bestConf  = ($cveMatches | Sort-Object -Property @{ Expression = { $confRank["$($_.Confidence)"] }; Descending = $true } | Select-Object -First 1).Confidence
+        $anyUncertain = @($cveMatches | Where-Object { -not $_.Certain }).Count -gt 0
 
-        # Severity: prefer real CVSS; otherwise fall back to match confidence.
+        $kevMatches = @($cveMatches | Where-Object { $_.Kev })
+        $kevCount   = $kevMatches.Count
+        $epssVals   = @($cveMatches | ForEach-Object { ConvertTo-CvssScore $_.Epss } | Where-Object { $null -ne $_ })
+        $maxEpss    = if ($epssVals.Count -gt 0) { ($epssVals | Measure-Object -Maximum).Maximum } else { $null }
+
+        # Severity: CVSS-driven, with a KEV floor of High (known exploited is urgent).
         $cvssSeverity = Get-CvssSeverity $worstCvss
         $severity = if ($cvssSeverity) { $cvssSeverity }
                     else { switch ($bestConf) { 'High' { 'High' } 'Medium' { 'Medium' } default { 'Low' } } }
+        if ($kevCount -gt 0 -and $sevRank[$severity] -lt $sevRank['High']) { $severity = 'High' }
 
-        # Top CVEs for the evidence line: by CVSS desc (scored first), capped.
-        $top = @($matches | Sort-Object @{ Expression = { if ($null -ne $_.Cvss) { [double]$_.Cvss } else { -1 } } } -Descending |
+        $top = @($cveMatches | Sort-Object -Property `
+                    @{ Expression = { if ($_.Kev) { 1 } else { 0 } }; Descending = $true },
+                    @{ Expression = { if ($null -ne $_.Cvss) { [double]$_.Cvss } else { -1 } }; Descending = $true } |
                  Select-Object -First 8 |
-                 ForEach-Object { if ($null -ne $_.Cvss) { "$($_.CveId) (CVSS $($_.Cvss))" } else { "$($_.CveId)" } })
+                 ForEach-Object {
+                    $tag = ''
+                    if ($_.Kev) { $tag += ' [KEV]' }
+                    if ($null -ne $_.Cvss) { "$($_.CveId) (CVSS $($_.Cvss))$tag" } else { "$($_.CveId)$tag" }
+                 })
         $topStr = $top -join ', '
-        $moreStr = if ($matches.Count -gt 8) { " [+$($matches.Count - 8) more]" } else { '' }
+        $moreStr = if ($cveMatches.Count -gt 8) { " [+$($cveMatches.Count - 8) more]" } else { '' }
 
-        $worstCvssStr = if ($null -ne $worstCvss) { "$worstCvss" } else { 'n/a (no CVSS in database)' }
-        $triage = if ($anyUncertain) { ' Some versions could not be compared precisely -- verify against the CVE.' } else { '' }
+        $worstCvssStr = if ($null -ne $worstCvss) { "$worstCvss" } else { 'n/a' }
+        $kevStr   = if ($kevCount -gt 0) { " $kevCount KNOWN-EXPLOITED (KEV)." } else { '' }
+        $epssStr  = if ($null -ne $maxEpss) { " Max EPSS $([math]::Round($maxEpss,3))." } else { '' }
+        $triage   = if ($anyUncertain) { ' Some versions could not be compared precisely -- verify against the CVE.' } else { '' }
 
         New-Finding `
             -Finding_ID 'CVE-PRODUCT' `
@@ -9203,34 +9333,42 @@ function Invoke-OfflineCVEScan {
             -Category 'Vulnerable Software' `
             -Target "$displayName $($target.RawVersion)" `
             -Finding_Type 'Vulnerability' `
-            -Finding "Installed software has $($matches.Count) known CVE(s) (worst CVSS $worstCvssStr)." `
-            -Evidence "$($matches.Count) CVE(s) match $displayName $($target.RawVersion). Worst: CVSS $worstCvssStr $worstCve. Top: $topStr$moreStr.$triage Match confidence: $bestConf." `
-            -Recommendation "Upgrade or patch $displayName above the affected versions; prioritise by CVSS. Full per-CVE list in CVE_Matches.csv; product ranking in CVE_By_Product.csv."
+            -Finding "Installed software has $($cveMatches.Count) known CVE(s) (worst CVSS $worstCvssStr)$(if($kevCount -gt 0){', KEV-listed'})." `
+            -Evidence "$($cveMatches.Count) CVE(s) match $displayName $($target.RawVersion). Worst: CVSS $worstCvssStr $worstCve.$kevStr$epssStr Top: $topStr$moreStr.$triage Match confidence: $bestConf." `
+            -Recommendation "Upgrade or patch $displayName above the affected versions; prioritise KEV-listed and high-CVSS items first. Full per-CVE list in CVE_Matches.csv; product ranking in CVE_By_Product.csv."
 
         $productFindingCount++
 
         $byProduct.Add([PSCustomObject]@{
-            Product        = $displayName
-            Version        = $target.RawVersion
-            CVE_Count      = $matches.Count
-            Worst_CVSS     = if ($null -ne $worstCvss) { $worstCvss } else { '' }
-            Worst_Severity = $severity
-            Worst_CVE      = $worstCve
+            Product          = $displayName
+            Version          = $target.RawVersion
+            CVE_Count        = $cveMatches.Count
+            KEV_Count        = $kevCount
+            Max_EPSS         = if ($null -ne $maxEpss) { [math]::Round($maxEpss,4) } else { '' }
+            Worst_CVSS       = if ($null -ne $worstCvss) { $worstCvss } else { '' }
+            Worst_Severity   = $severity
+            Worst_CVE        = $worstCve
+            Worst_CVSS_Vector = $worstVec
             Match_Confidence = $bestConf
-            Top_CVEs       = $topStr
+            Top_CVEs         = $topStr
         })
 
-        foreach ($m in $matches) {
+        foreach ($m in $cveMatches) {
             $allMatches.Add([PSCustomObject]@{
                 Product     = $displayName
                 Version     = $target.RawVersion
                 CVE         = $m.CveId
                 CVSS        = if ($null -ne $m.Cvss) { $m.Cvss } else { '' }
+                CVSS_Vector = $m.Vector
                 Severity    = (Get-CvssSeverity $m.Cvss)
+                KEV         = if ($m.Kev) { 'TRUE' } else { '' }
+                EPSS        = $m.Epss
                 Vendor      = $m.Vendor
+                Vendor_Match = $m.VendorMatch
                 Affected_Spec = $m.Spec
                 Confidence  = $m.Confidence
                 Version_Certain = $m.Certain
+                Outcome     = $m.Outcome
             })
         }
     }
@@ -9238,16 +9376,16 @@ function Invoke-OfflineCVEScan {
     # ------------------------------------------------------------ exports ---
     if ($Context.OutputPath) {
         if ($byProduct.Count -gt 0) {
-            # Per-key direction goes INSIDE each hashtable (Descending=$true). Mixing a
-            # trailing -Descending switch with comma-separated sort keys is a parse error.
+            # Rank: KEV first, then worst CVSS, then CVE count. Per-key Descending lives
+            # INSIDE each hashtable -- a trailing -Descending between keys is a parse error.
             $byProduct |
                 Sort-Object -Property `
+                    @{ Expression = { if ([int]("0" + ("$($_.KEV_Count)" -replace '\D','')) -gt 0) { 1 } else { 0 } }; Descending = $true },
                     @{ Expression = { if ("$($_.Worst_CVSS)" -ne '') { [double]$_.Worst_CVSS } else { -1 } }; Descending = $true },
                     @{ Expression = { [int]("0" + ("$($_.CVE_Count)" -replace '\D','')) }; Descending = $true } |
                 Export-TJETCsvSafe -Path (Join-Path $Context.OutputPath 'CVE_By_Product.csv') | Out-Null
         }
         if ($allMatches.Count -gt 0) {
-            # Product ascending, CVSS descending -- mixed directions require per-key hashtables.
             $allMatches |
                 Sort-Object -Property `
                     @{ Expression = { "$($_.Product)" } },
@@ -9663,13 +9801,17 @@ function New-AssessmentSummary {
 
     function CountSev($sev) { @($active | Where-Object { $_.Severity -eq $sev }).Count }
 
-    # Total CVE count (across products) if the per-product export is present.
+    # Total CVE count and KEV (known-exploited) count across products, if the per-product
+    # export is present.
     $vulnCveTotal = ''
+    $vulnKevTotal = ''
     $vbp = Join-Path $Path 'CVE_By_Product.csv'
     if (Test-Path $vbp) {
         try {
-            $vulnCveTotal = (@(Import-Csv $vbp) | ForEach-Object { [int]("0" + ("$($_.CVE_Count)" -replace '\D','')) } | Measure-Object -Sum).Sum
-        } catch { $vulnCveTotal = '' }
+            $vbpRows = @(Import-Csv $vbp)
+            $vulnCveTotal = ($vbpRows | ForEach-Object { [int]("0" + ("$($_.CVE_Count)" -replace '\D','')) } | Measure-Object -Sum).Sum
+            $vulnKevTotal = ($vbpRows | ForEach-Object { [int]("0" + ("$($_.KEV_Count)" -replace '\D','')) } | Measure-Object -Sum).Sum
+        } catch { $vulnCveTotal = ''; $vulnKevTotal = '' }
     }
 
     [PSCustomObject]@{
@@ -9681,6 +9823,7 @@ function New-AssessmentSummary {
         Aggregate_Insights  = $aggregate.Count
         Vulnerable_Products = $vulns.Count
         Vulnerable_CVEs     = $vulnCveTotal
+        Vulnerable_CVEs_KEV = $vulnKevTotal
         Critical_Active     = CountSev 'Critical'
         High_Active         = CountSev 'High'
         Medium_Active       = CountSev 'Medium'
@@ -11512,24 +11655,33 @@ $rowsHtml
                 Critical = 'var(--crit)'; High = 'var(--high)'; Medium = 'var(--med)'
                 Low = 'var(--low)'; Info = 'var(--info)'
             }
-            # Rank by CVSS desc, then CVE count desc.
-            $vulnOrdered = $vulnRows | Sort-Object `
+            # Rank: KEV first, then worst CVSS, then CVE count. Per-key Descending lives
+            # inside each hashtable (a trailing -Descending between keys is a parse error).
+            $vulnOrdered = $vulnRows | Sort-Object -Property `
+                @{ Expression = { if ([int]("0" + ("$($_.KEV_Count)" -replace '\D','')) -gt 0) { 1 } else { 0 } }; Descending = $true },
                 @{ Expression = { if ("$($_.Worst_CVSS)" -ne '') { [double]$_.Worst_CVSS } else { -1 } }; Descending = $true },
-                @{ Expression = { [int]("0" + ($_.CVE_Count -replace '\D','')) }; Descending = $true }
+                @{ Expression = { [int]("0" + ("$($_.CVE_Count)" -replace '\D','')) }; Descending = $true }
 
-            $totalCves = ($vulnRows | ForEach-Object { [int]("0" + ($_.CVE_Count -replace '\D','')) } | Measure-Object -Sum).Sum
+            $totalCves = ($vulnRows | ForEach-Object { [int]("0" + ("$($_.CVE_Count)" -replace '\D','')) } | Measure-Object -Sum).Sum
+            $totalKev  = ($vulnRows | ForEach-Object { [int]("0" + ("$($_.KEV_Count)" -replace '\D','')) } | Measure-Object -Sum).Sum
+            $kevSummary = if ($totalKev -gt 0) { " &middot; <b style='color:var(--crit)'>$totalKev KEV</b>" } else { '' }
 
             $vrows = ''
             foreach ($v in $vulnOrdered) {
                 $sev   = "$($v.Worst_Severity)"
                 $color = if ($sevColor.ContainsKey($sev)) { $sevColor[$sev] } else { 'var(--muted)' }
                 $cvss  = if ("$($v.Worst_CVSS)" -ne '') { "$($v.Worst_CVSS)" } else { 'n/a' }
+                $kevN  = [int]("0" + ("$($v.KEV_Count)" -replace '\D',''))
+                $kevCell = if ($kevN -gt 0) { "<span class='covbadge' style='background:var(--crit)'>$kevN KEV</span>" } else { '' }
+                $epssCell = if ("$($v.Max_EPSS)" -ne '') { "$($v.Max_EPSS)" } else { '' }
                 $vrows += @"
       <tr>
         <td class="covcat">$(Format-HtmlText $v.Product)</td>
         <td>$(Format-HtmlText $v.Version)</td>
         <td><span class="covbadge" style="background:$color">$(Format-HtmlText $sev)</span></td>
         <td style="text-align:right;font-weight:700">$cvss</td>
+        <td style="text-align:center">$kevCell</td>
+        <td style="text-align:right">$epssCell</td>
         <td style="text-align:right">$(Format-HtmlText $v.CVE_Count)</td>
         <td class="covdetail">$(Format-HtmlText $v.Top_CVEs)</td>
       </tr>
@@ -11537,10 +11689,10 @@ $rowsHtml
             }
             $vulnHtml = @"
   <details class="coverage" open>
-    <summary><span class="covtitle">Vulnerable Software</span> <span class="covoverall" style="color:var(--muted)">$($vulnRows.Count) product(s) &middot; $totalCves CVE(s)</span><span class="covhint">ranked by CVSS</span></summary>
-    <p class="covnote">Known CVEs affecting installed software, aggregated per product and ranked by worst CVSS. These are vulnerability-management items, tracked separately from the configuration/identity/attack-path findings above so neither buries the other. Full per-CVE detail is in CVE_Matches.csv; this list is in CVE_By_Product.csv.</p>
+    <summary><span class="covtitle">Vulnerable Software</span> <span class="covoverall" style="color:var(--muted)">$($vulnRows.Count) product(s) &middot; $totalCves CVE(s)$kevSummary</span><span class="covhint">ranked by KEV, then CVSS</span></summary>
+    <p class="covnote">Known CVEs affecting installed software, aggregated per product and ranked by KEV (known exploited) then worst CVSS. These are vulnerability-management items, tracked separately from the configuration/identity/attack-path findings above so neither buries the other. KEV = in CISA's Known Exploited Vulnerabilities catalog; EPSS = probability of exploitation. Full per-CVE detail is in CVE_Matches.csv; this list is in CVE_By_Product.csv.</p>
     <table class="covtable">
-      <thead><tr><th>Product</th><th>Version</th><th>Worst severity</th><th style="text-align:right">Worst CVSS</th><th style="text-align:right">CVEs</th><th>Top CVEs</th></tr></thead>
+      <thead><tr><th>Product</th><th>Version</th><th>Worst severity</th><th style="text-align:right">Worst CVSS</th><th style="text-align:center">KEV</th><th style="text-align:right">Max EPSS</th><th style="text-align:right">CVEs</th><th>Top CVEs</th></tr></thead>
       <tbody>
 $vrows
       </tbody>
@@ -12425,7 +12577,7 @@ public static class TJETVt {
 # ==========================================================================
 if ($MyInvocation.InvocationName -ne '.') {
     Write-Host ""
-    Write-Host "  ThreatJET - Jumbo Evaluation Toolkit (single-file build, v2.3.2)" -ForegroundColor Cyan
+    Write-Host "  ThreatJET - Jumbo Evaluation Toolkit (single-file build, v2.4.0)" -ForegroundColor Cyan
     Write-Host "  Dot-source this file, then run: Show-TJETMenu" -ForegroundColor Gray
     Write-Host ""
 }
