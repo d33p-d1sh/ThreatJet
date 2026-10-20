@@ -228,25 +228,42 @@ Enable with `-IncludeCVEScan` and point `-CVEDatabasePath` at a CVE database. **
 required** — a `.csv` or `.json` database is read with native PowerShell:
 
 ```
-cve_id, product_name, vendor_name, vulnerable_spec[, cvss]
+cve_id, product_name, vendor_name, vulnerable_spec, unaffected_spec, cvss, cvss_vector, kev, epss
 ```
 
-- `vulnerable_spec` is `Ver: X to <Y` (the half-open range `[X, Y)` — upper bound exclusive)
-  or `Ver: X` (exact affected version).
-- `cvss` is an **optional** base score (0.0–10.0). When present it drives severity and
-  ranking (≥9 Critical, ≥7 High, ≥4 Medium, >0 Low). When absent, severity falls back to
-  match confidence and ranking is by CVE count.
+Only the first four columns are required; the rest are optional.
 
-Matching is deliberately conservative (a CVE feed keyed on free-text product names is noisy):
-product name is normalised and gated on exact/contained match, and the installed version is
-tested against the spec; an unparseable version is reported at **Low** confidence rather than
-dropped or over-claimed. **A CVE match is not proof of exploitability** — the recommendation
-is always "validate, then patch."
+- `vulnerable_spec` / `unaffected_spec` use the same grammar: `Ver: X to <Y` (the half-open
+  range `[X, Y)` — upper bound exclusive) or `Ver: X` (exact version). A row carries *either*
+  a vulnerable spec (affected) *or* an unaffected spec (a version explicitly **not** affected,
+  e.g. a fixed release inside an affected range).
+- `cvss` is an optional base score (0.0–10.0); when present it drives severity (≥9 Critical,
+  ≥7 High, ≥4 Medium, >0 Low). `cvss_vector` is carried through for triage.
+- `kev` = `TRUE` if the CVE is in CISA's Known Exploited Vulnerabilities catalog. `epss` is the
+  FIRST EPSS probability (0–1).
+
+Precision and prioritization:
+
+- **Unaffected suppression** — if the installed version satisfies an `unaffected_spec` for a
+  CVE, that CVE is dropped for the product (outcome **Unaffected**), so a patched version
+  inside an affected range is not falsely flagged.
+- **Vendor corroboration** — the installed `Software_Publisher` is compared to the CVE vendor
+  by token overlap; a clear mismatch **downgrades confidence** and is annotated (never a hard
+  exclude — publisher strings legitimately differ, so excluding would cause false negatives).
+- **Outcomes** — each match is **Affected**, **Unaffected**, or **Unknown** (version could not
+  be compared — reported at low confidence, not dropped).
+- **KEV / EPSS prioritization** — KEV (known exploited) outranks everything; a product with any
+  KEV CVE is raised to at least High and sorted to the top, then by CVSS, then EPSS.
+
+**A CVE match is not proof of exploitability** — the recommendation is always "validate, then
+patch."
 
 Results are **aggregated per product** (`Finding_Type = Vulnerability`) and shown in a
-dedicated, **CVSS-ranked "Vulnerable Software" panel**, kept out of the posture dashboard so a
-wall of CVEs can't bury the configuration findings. Full detail is written to
-`CVE_By_Product.csv` (one row per product) and `CVE_Matches.csv` (one row per matched CVE).
+dedicated **"Vulnerable Software" panel** (ranked by KEV then CVSS, with KEV and Max-EPSS
+columns), kept out of the posture dashboard so a wall of CVEs can't bury the configuration
+findings. Full detail is written to `CVE_By_Product.csv` (one row per product) and
+`CVE_Matches.csv` (one row per matched CVE, with outcome, vendor-match, CVSS vector, KEV and
+EPSS).
 
 ### Building the CVE database
 
@@ -259,16 +276,22 @@ writes the CSV in exactly the format above.
 git clone --depth 1 https://github.com/CVEProject/cvelistV5.git
 #    or download a nightly bundle from the repo's Releases and extract it.
 
-# 2. Build the database (High-and-above keeps it small and fast):
-.\Build-TJETCveDatabase.ps1 -CveListPath C:\src\cvelistV5 -OutputPath C:\Security\cves.csv -MinCvss 7
+# 2. Build it. Optionally enrich with CISA KEV and FIRST EPSS (both local files -> no
+#    internet dependency on the assessment host):
+.\Build-TJETCveDatabase.ps1 -CveListPath C:\src\cvelistV5 -OutputPath C:\Security\cves.csv `
+    -MinCvss 7 -KevPath C:\feeds\known_exploited_vulnerabilities.json -EpssPath C:\feeds\epss_scores-current.csv
 
 # 3. Point ThreatJET at it:
 Invoke-ThreatJetAssessment -IncludeCVEScan -CVEDatabasePath C:\Security\cves.csv
 ```
 
-Useful switches: `-MinCvss <n>` (drop anything below a CVSS base score), `-Limit <n>` (quick
-partial run to eyeball the output), `-IncludeNoVersion` (also emit products affected at all
-versions, which match at low confidence).
+Useful switches: `-MinCvss <n>` (drop anything below a CVSS base score; KEV-listed CVEs are
+always kept), `-KevPath <json>` (CISA KEV catalog — stamps `kev=TRUE`), `-EpssPath <csv>`
+(FIRST EPSS daily scores), `-Limit <n>` (quick partial run), `-IncludeNoVersion` (also emit
+products affected at all versions, which match at low confidence).
+
+Feeds (optional, download once): CISA KEV `known_exploited_vulnerabilities.json`
+(cisa.gov), FIRST EPSS `epss_scores-current.csv.gz` (epss.cyentia.com — decompress first).
 
 Under the hood, each cvelistV5 record maps to one or more rows:
 
@@ -277,8 +300,11 @@ Under the hood, each cvelistV5 record maps to one or more rows:
 - `affected[].versions[]`: a `lessThan` bound → `Ver: <version> to <lessThan>`; a
   `lessThanOrEqual` bound → that range **plus** an exact `Ver: <lessThanOrEqual>` row; a bare
   `version` → `Ver: <version>`
-- best base score across `cna.metrics[]` and the CISA-ADP container (prefer CVSS v3.1 → v3.0
-  → v4.0 → v2.0) → `cvss`
+- `versions[]` entries with `status: unaffected` → `unaffected_spec` rows (so a fixed version
+  inside an affected range is excluded at scan time)
+- best base score + vector across `cna.metrics[]` and the CISA-ADP container (prefer CVSS v3.1
+  → v3.0 → v4.0 → v2.0) → `cvss` / `cvss_vector`
+- CISA KEV membership → `kev`; FIRST EPSS score → `epss` (when those feeds are supplied)
 - skip records whose `cveMetadata.state` is `REJECTED`
 
 If you already have a SQLite CVE database, convert it once with the standalone `sqlite3` CLI
@@ -450,10 +476,13 @@ Static credential on a privileged account. *Fix:* remove the flag or migrate to 
 The account may have an empty password. *Fix:* clear the flag, set a compliant password
 immediately, check auth logs for prior use.
 
-**ID-011 — Privileged identity with no directly assigned PSO** · High · Medium
-Inherits a domain default weaker than your privileged baseline (`PrivilegedPasswordBaselineLength`,
-default 14). Only *direct* assignment is evaluated — verify group-inherited PSOs before
-acting. Disabled accounts, `krbtgt` and `Guest` are excluded. *Fix:* assign a strong PSO.
+**ID-011 — Privileged identity with no applied PSO** · High · High
+No fine-grained password policy applies, so the account inherits a domain default weaker than
+your privileged baseline (`PrivilegedPasswordBaselineLength`, default 14). Uses
+`msDS-ResultantPSO` so **both direct and group-inherited** PSOs are evaluated (an account
+already covered by an inherited PSO is not flagged); a weak *applied* PSO is reported
+separately as DOM-006. Disabled accounts, `krbtgt` and `Guest` are excluded. *Fix:* assign a
+strong PSO to the account or its admin group.
 
 ### Infrastructure
 
