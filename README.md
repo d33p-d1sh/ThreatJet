@@ -1,8 +1,18 @@
+<div align="center">
+
+<img src="assets/threatjet-logo.webp" alt="ThreatJET — Jumbo Evaluation Toolkit logo" width="360">
+
 # ThreatJET — Jumbo Evaluation Toolkit
+
+**Know the exposure. Trace the threat. Secure the mission.**
+
+![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg) ![RSAT-free](https://img.shields.io/badge/RSAT-Free-7C3AED) ![Offline capable](https://img.shields.io/badge/Offline-Capable-00B8D9)
+
+</div>
 
 A **read-only, RSAT-free** PowerShell security assessment for Active Directory and the
 Windows hosts within it. Point it at a domain and it collects configuration over
-LDAP/ADSI, correlates the weaknesses into **real attack paths to Tier 0**, scans installed
+LDAP/ADSI, correlates the weaknesses into **potential attack paths to Tier 0**, scans installed
 software against an **offline CVE database**, and produces an interactive HTML report plus
 a **safety-guarded remediation** script.
 
@@ -652,7 +662,7 @@ typically 15–16 (high security), 14 (commercial), 12 (legacy).
 
 ## Before you trust the output
 
-- **Zero findings on a real domain means the tool is broken, not that the domain is
+- **Zero findings should prompt verification of collection coverage and detector execution, not that the domain is
   perfect.** Check the coverage panel / collection summary and the log for `No privileged
   principals identified` (which means several detections are silently disabled).
 - **Test against a lab with known weaknesses first** so you can confirm it finds what you
