@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a capability or improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the assessment or reporting gap.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain how it should work without adding unguarded changes to target systems.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or compatibility concerns
+      description: Consider Windows PowerShell 5.1, RSAT-free operation, and offline use.
+    validations:
+      required: false

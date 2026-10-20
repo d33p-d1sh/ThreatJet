@@ -1,0 +1,46 @@
+# Sensitive/generated assessment results: never publish real environment data.
+ThreatJet_Report.html
+Remediation_Report.html
+Remediation_Script.ps1
+AD_Assessment_Findings.csv
+AD_Assessment_Findings.json
+ATTACK_Coverage.csv
+Assessment_Summary.csv
+Coverage.json
+Run_Manifest.json
+CVE_By_Product.csv
+CVE_Matches.csv
+Baseline_Comparison.csv
+Attack_Paths.csv
+AD_*_Audit.csv
+REL_*.csv
+Inventory/
+output/
+outputs/
+reports/
+assessment-output/
+cves.csv
+
+# Local settings, credentials, temporary files
+.env
+.env.*
+*.secret
+*.secrets
+*.key
+*.pfx
+*.p12
+*.cer
+*.pem
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Do not commit raw downloaded vulnerability feeds.
+cvelistV5/
+kev.json
+epss_scores-current.csv

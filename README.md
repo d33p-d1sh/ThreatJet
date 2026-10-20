@@ -6,7 +6,7 @@
 
 **Know the exposure. Trace the threat. Secure the mission.**
 
-![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg) ![RSAT-free](https://img.shields.io/badge/RSAT-Free-7C3AED) ![Offline capable](https://img.shields.io/badge/Offline-Capable-00B8D9)
+[![PowerShell CI](https://github.com/d33p-d1sh/ThreatJet/actions/workflows/ci.yml/badge.svg)](https://github.com/d33p-d1sh/ThreatJet/actions/workflows/ci.yml) ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg) ![RSAT-free](https://img.shields.io/badge/RSAT-Free-7C3AED) ![Offline capable](https://img.shields.io/badge/Offline-Capable-00B8D9)
 
 </div>
 
@@ -29,6 +29,7 @@ or assessment laptop and run — no module install, no RSAT, no internet.
 
 - [What it is](#what-it-is)
 - [Requirements](#requirements)
+- [Development and contributing](#development-and-contributing)
 - [Install and quick start](#install-and-quick-start)
 - [Usage](#usage)
 - [Viewing attack paths](#viewing-attack-paths)
@@ -73,6 +74,27 @@ It assesses four surfaces in one run:
 Every finding carries an **offensive technique**, its **MITRE ATT&CK ID**, **blue-team
 detection guidance**, and ordered **remediation steps** — so the output drives both
 remediation and detection engineering.
+
+---
+
+## Development and contributing
+
+The repository includes automated PowerShell syntax checks, focused Pester regression
+tests, and PSScriptAnalyzer diagnostics. These checks do **not** replace testing against
+a disposable Active Directory lab with known weaknesses; see
+[Before you trust the output](#before-you-trust-the-output).
+
+To run the tests locally (Windows PowerShell 5.1 or PowerShell 7 on Windows):
+
+```powershell
+Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force
+Invoke-Pester -Path .\tests -CI
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and safe test data,
+[SECURITY.md](SECURITY.md) for private vulnerability reporting, and
+[CHANGELOG.md](CHANGELOG.md) for version history. The
+[release checklist](docs/RELEASE_CHECKLIST.md) covers verification before tagging a release.
 
 ---
 
@@ -633,9 +655,9 @@ them in place, or override the equivalents via parameters.
 
 ```powershell
 $script:TJETConfig = @{
-    CollectorVersion                 = "2.3.2"
-    CorrelationVersion               = "2.3.2"
-    SchemaVersion                    = "1.5"
+    CollectorVersion                 = "2.4.0"
+    CorrelationVersion               = "2.4.0"
+    SchemaVersion                    = "1.6"
 
     EnableFilesystemCredentialScan   = $false    # -DataminePasswords
     CVEDatabasePath                  = "C:\Security\cves.csv"   # -CVEDatabasePath
