@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/threatjet-logo.webp" alt="ThreatJET — Jumbo Evaluation Toolkit logo" width="360">
+<img src="assets/threatjet-official-logo.webp" alt="ThreatJET — Jumbo Evaluation Toolkit logo" width="360">
 
 # ThreatJET — Jumbo Evaluation Toolkit
 
