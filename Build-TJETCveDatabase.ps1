@@ -160,40 +160,79 @@ function Get-BestCvssInfo {
 }
 
 # Turn one affected-product entry into affected and unaffected spec lists.
+# A version token is only useful to the scanner if it IS a numeric version with up to four parts
+# (e.g. "1.2.3", "10.0.19041.1234"). Microsoft and browser CVEs in cvelistV5 routinely put
+# platform names in the version field ("Windows 10 for 32-bit Systems") and non-numeric
+# bounds in lessThan ("publication", "unspecified"). Emitting those as specs produces rows
+# the scanner can never confirm -- every match comes back Unknown -- which is exactly the
+# noise that buried the real results. So a spec is written ONLY when every version token in
+# it is numerically comparable; anything else is dropped here rather than poisoning the DB.
+function Test-ComparableVersionToken {
+    param([string]$Token)
+    if ([string]::IsNullOrWhiteSpace($Token)) { return $false }
+    $value = $Token.Trim()
+    # Match the entire token: '1.2-beta', '1.2.*' and '1.2.3.4.5' are not
+    # safely comparable by the scanner's numeric System.Version logic.
+    if ($value -notmatch '^\d+(?:\.\d+){0,3}$') { return $false }
+    if ($value -notmatch '\.') { $value += '.0' }
+    $parsed = $null
+    return [version]::TryParse($value, [ref]$parsed)
+}
+
 function Get-ProductSpecs {
     param($Affected)
 
     $aff   = New-Object System.Collections.Generic.List[string]
     $unaff = New-Object System.Collections.Generic.List[string]
     $emittedAff = $false
+    $hasUnversionedAffected = $false
 
     foreach ($v in @($Affected.versions)) {
         if (-not $v) { continue }
 
         $status = "$($v.status)"
-        # Keep only explicit affected / unaffected entries; ignore 'unknown' and blanks-with-status.
-        if ($status -and $status -ne 'affected' -and $status -ne 'unaffected') { continue }
+        # A missing status must not be silently interpreted as affected.
+        if ($status -ne 'affected' -and $status -ne 'unaffected') { continue }
+
+        # CVE 5 'changes' can flip affected/unaffected status inside a range.
+        # Until these transitions are modeled, skip the entry rather than
+        # asserting that the entire original range is vulnerable.
+        if ($v.changes -and @($v.changes).Count -gt 0) { continue }
 
         $isUnaffected = ($status -eq 'unaffected')
-        $target = if ($isUnaffected) { $unaff } else { $aff }
+        # Assign directly: PowerShell pipeline enumeration would turn an empty List into $null.
+        if ($isUnaffected) { $target = $unaff } else { $target = $aff }
         $ver = "$($v.version)".Trim()
+        $lt  = "$($v.lessThan)".Trim()
+        $lte = "$($v.lessThanOrEqual)".Trim()
 
-        if ($v.lessThan) {
-            $target.Add("Ver: $ver to <$($v.lessThan)")
-            if (-not $isUnaffected) { $emittedAff = $true }
+        if ($lt) {
+            # Range needs BOTH a comparable lower bound and a comparable upper bound.
+            if ((Test-ComparableVersionToken $ver) -and (Test-ComparableVersionToken $lt)) {
+                $target.Add("Ver: $ver to <$lt")
+                if (-not $isUnaffected) { $emittedAff = $true }
+            }
         }
-        elseif ($v.lessThanOrEqual) {
-            $target.Add("Ver: $ver to <$($v.lessThanOrEqual)")
-            $target.Add("Ver: $($v.lessThanOrEqual)")
-            if (-not $isUnaffected) { $emittedAff = $true }
+        elseif ($lte) {
+            if ((Test-ComparableVersionToken $ver) -and (Test-ComparableVersionToken $lte)) {
+                $target.Add("Ver: $ver to <$lte")
+                $target.Add("Ver: $lte")
+                if (-not $isUnaffected) { $emittedAff = $true }
+            }
         }
-        elseif (-not [string]::IsNullOrWhiteSpace($ver) -and $ver -ne '*' -and $ver -ne 'n/a' -and $ver -ne 'unspecified') {
+        elseif ((Test-ComparableVersionToken $ver) -and $ver -ne '*' -and $ver -ne 'n/a' -and $ver -ne 'unspecified') {
             $target.Add("Ver: $ver")
             if (-not $isUnaffected) { $emittedAff = $true }
         }
+        elseif (-not $isUnaffected) {
+            $hasUnversionedAffected = $true
+        }
     }
 
-    if (-not $emittedAff -and $Affected.defaultStatus -eq 'affected' -and $IncludeNoVersion) {
+    # Optional low-confidence rows for explicitly affected wildcard/non-numeric
+    # versions or an affected default with no usable version ranges.
+    if ($IncludeNoVersion -and ($hasUnversionedAffected -or
+        (-not $emittedAff -and $Affected.defaultStatus -eq 'affected'))) {
         $aff.Add('')
     }
 
@@ -209,6 +248,7 @@ $writer.WriteLine('cve_id,product_name,vendor_name,vulnerable_spec,unaffected_sp
 $processed = 0
 $rows      = 0
 $skippedRejected = 0
+$skippedError    = 0
 $kevStamped = 0
 
 try {
@@ -224,7 +264,19 @@ try {
         try {
             $json = Get-Content -LiteralPath $file -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
         }
-        catch { continue }
+        catch {
+            $skippedError++
+            Write-Verbose "Could not parse '$file': $($_.Exception.Message)"
+            continue
+        }
+
+        if (-not $json) { continue }
+
+        # One malformed or oddly-shaped record must never abort a 250k-file build. Wrap the
+        # whole per-record projection so a null property chain (a record missing cna, metrics,
+        # affected, versions, etc.) skips that record -- counted in $skippedError -- instead of
+        # terminating the run under $ErrorActionPreference = 'Stop'.
+        try {
 
         $cveId = "$($json.cveMetadata.cveId)".Trim()
         if (-not $cveId) { continue }
@@ -251,8 +303,6 @@ try {
         if ($MinCvss -gt 0 -and -not $isKev) {
             if ($null -eq $cvss -or $cvss -lt $MinCvss) { continue }
         }
-        if ($isKev) { $kevStamped++ }
-
         $cvssField = if ($null -ne $cvss) { "$cvss" } else { '' }
 
         $affectedAll = @()
@@ -290,7 +340,17 @@ try {
                     (ConvertTo-CsvField $epssField)
                 ) -join ',') )
                 $rows++
+                if ($isKev) { $kevStamped++ }
             }
+        }
+
+        }
+        catch {
+            # Skip this record and keep going; a handful of malformed records in cvelistV5
+            # should not cost the whole database.
+            $skippedError++
+            Write-Verbose "Skipped CVE record '$file': $($_.Exception.Message)"
+            continue
         }
     }
 }
@@ -300,9 +360,9 @@ finally {
 }
 
 Write-Host ''
-Write-Host ("Done. {0:N0} CVE record(s) processed, {1:N0} rejected and skipped." -f $processed, $skippedRejected) -ForegroundColor Green
+Write-Host ("Done. {0:N0} CVE record(s) processed, {1:N0} rejected, {2:N0} skipped on error." -f $processed, $skippedRejected, $skippedError) -ForegroundColor Green
 Write-Host ("Wrote {0:N0} product/version row(s) to:" -f $rows) -ForegroundColor Green
-if ($kevSet.Count -gt 0) { Write-Host ("  {0:N0} row-record(s) flagged KEV (known exploited)." -f $kevStamped) -ForegroundColor Yellow }
+if ($kevSet.Count -gt 0) { Write-Host ("  {0:N0} output row(s) flagged KEV (known exploited)." -f $kevStamped) -ForegroundColor Yellow }
 Write-Host "    $OutputPath"
 Write-Host ''
 Write-Host "Point ThreatJET at it:" -ForegroundColor Gray

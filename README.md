@@ -320,7 +320,15 @@ Invoke-ThreatJetAssessment -IncludeCVEScan -CVEDatabasePath C:\Security\cves.csv
 Useful switches: `-MinCvss <n>` (drop anything below a CVSS base score; KEV-listed CVEs are
 always kept), `-KevPath <json>` (CISA KEV catalog — stamps `kev=TRUE`), `-EpssPath <csv>`
 (FIRST EPSS daily scores), `-Limit <n>` (quick partial run), `-IncludeNoVersion` (also emit
-products affected at all versions, which match at low confidence).
+unversioned/wildcard affected entries, which match at low confidence).
+
+**Precision limitation:** By default the builder exports only strictly numeric versions
+that ThreatJET can compare. Platform descriptions, wildcard versions, prerelease
+suffixes, and CVE 5 version entries with `changes[]` status transitions are skipped rather
+than incorrectly marked affected. This reduces false positives **but can omit real CVEs**;
+review vendor advisories for products using these version schemes. `-IncludeNoVersion`
+opts into additional unverified matches; the scanner's product-name and publisher
+corroboration remains heuristic, so even a version-confirmed match needs validation.
 
 Feeds (optional, download once): CISA KEV `known_exploited_vulnerabilities.json`
 (cisa.gov), FIRST EPSS `epss_scores-current.csv.gz` (epss.cyentia.com — decompress first).
