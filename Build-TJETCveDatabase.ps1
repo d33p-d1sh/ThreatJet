@@ -200,7 +200,8 @@ function Get-ProductSpecs {
         if ($v.changes -and @($v.changes).Count -gt 0) { continue }
 
         $isUnaffected = ($status -eq 'unaffected')
-        $target = if ($isUnaffected) { $unaff } else { $aff }
+        # Assign directly: PowerShell pipeline enumeration would turn an empty List into $null.
+        if ($isUnaffected) { $target = $unaff } else { $target = $aff }
         $ver = "$($v.version)".Trim()
         $lt  = "$($v.lessThan)".Trim()
         $lte = "$($v.lessThanOrEqual)".Trim()
@@ -263,7 +264,11 @@ try {
         try {
             $json = Get-Content -LiteralPath $file -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
         }
-        catch { $skippedError++; continue }
+        catch {
+            $skippedError++
+            Write-Verbose "Could not parse '$file': $($_.Exception.Message)"
+            continue
+        }
 
         if (-not $json) { continue }
 
@@ -344,6 +349,7 @@ try {
             # Skip this record and keep going; a handful of malformed records in cvelistV5
             # should not cost the whole database.
             $skippedError++
+            Write-Verbose "Skipped CVE record '$file': $($_.Exception.Message)"
             continue
         }
     }
