@@ -3278,7 +3278,7 @@ function Import-AssessmentData {
             # the area was not selected. A genuine collection failure is logged as an ERROR by
             # the collector at collection time. So this is INFO, not a WARNING, and the wording
             # distinguishes "none present / not run" from a failure.
-            Write-TJETLog INFO "$key: no data collected (no $key objects present, or this area was not run); its detectors are skipped."
+            Write-TJETLog INFO "${key}: no data collected (no $key objects present, or this area was not run); its detectors are skipped."
         }
 
         $loaded[$key] = $rows
