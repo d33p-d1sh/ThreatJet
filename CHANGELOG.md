@@ -17,6 +17,19 @@ necessarily a published GitHub Release.
 - README configuration example aligned with the current standalone script
   (`CollectorVersion` / `CorrelationVersion` 2.4.0; `SchemaVersion` 1.6).
 
+## [2.5.1] — source version, not yet tagged as a GitHub Release
+
+- Adopt the uploaded standalone v2.5.1 assessment build as the repository source.
+- Improve AD/host correlation, finding deduplication, CVE certainty reporting, and
+  remediation mapping compared with the previous v2.4.0 source.
+- Correct `PORT-001` bind classification: specific-interface listeners are not
+  loopback-only, and listener presence is not proof of remote reachability.
+- Make `LOCAL-019` autologon remediation checks secret-safe: inspect the registry
+  value **name**, never print `DefaultPassword` contents.
+- Add offline Pester regression tests for bind scope, deduplication, and guarded
+  remediation command generation.
+- Update README configuration examples to source version 2.5.1 and schema 1.7.
+
 ## [2.4.0] — source version, not yet tagged as a GitHub Release
 
 - Standalone PowerShell 5.1+ assessment with LDAP/ADSI collection,

@@ -254,6 +254,12 @@ run (check the profile/scope) or found no paths on that domain.
 
 ---
 
+### Port exposure and remediation safety
+
+`PORT-001` distinguishes loopback-only, specific-interface, wildcard, and unknown listener bindings. A listener on a specific interface is **not** treated as loopback-only; a wildcard or specific-interface listener does **not** establish that a remote host can reach it through firewall controls. Confirm actual network reachability before assigning exploitability.
+
+Generated remediation commands are **review-only**. For `LOCAL-019` (Winlogon autologon credentials), the review snippet checks whether the `DefaultPassword` registry **value name** exists without reading or displaying its secret value. Rotate exposed credentials and validate operational dependencies before making changes.
+
 ## Offline CVE scanning
 
 Enable with `-IncludeCVEScan` and point `-CVEDatabasePath` at a CVE database. **No module is
@@ -663,9 +669,9 @@ them in place, or override the equivalents via parameters.
 
 ```powershell
 $script:TJETConfig = @{
-    CollectorVersion                 = "2.4.0"
-    CorrelationVersion               = "2.4.0"
-    SchemaVersion                    = "1.6"
+    CollectorVersion                 = "2.5.1"
+    CorrelationVersion               = "2.5.1"
+    SchemaVersion                    = "1.7"
 
     EnableFilesystemCredentialScan   = $false    # -DataminePasswords
     CVEDatabasePath                  = "C:\Security\cves.csv"   # -CVEDatabasePath
