@@ -58,3 +58,14 @@ Describe 'ThreatJET read-only helper functions' {
         }
     }
 }
+
+Describe 'Windows PowerShell 5.1 banner encoding' {
+    It 'stores the standalone script as UTF-8 with BOM so Unicode banner glyphs survive loading' {
+        $path = Join-Path $PSScriptRoot '..\ThreatJet.ps1'
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        $bytes.Length | Should -BeGreaterThan 3
+        $bytes[0] | Should -Be 0xEF
+        $bytes[1] | Should -Be 0xBB
+        $bytes[2] | Should -Be 0xBF
+    }
+}
